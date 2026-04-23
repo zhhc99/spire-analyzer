@@ -1,0 +1,13 @@
+{
+  "name": "spire-analyzer",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "spire-analyzer": "src/cli/main.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "cli": "node src/cli/main.js",
+    "web": "python3 -m http.server 4173 -d dist/web"
+  }
+}
