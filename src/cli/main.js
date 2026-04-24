@@ -444,6 +444,7 @@ function renderViewerTabs(locale, sections, sectionIndex) {
 function formatMomentParts(parts) {
   return parts.map(part => {
     if (part.tone === 'red') return colorize(part.text, 'red');
+    if (part.tone === 'red-italic') return stdout.isTTY ? `${ANSI.red}\x1b[3m${part.text}${ANSI.reset}` : part.text;
     if (part.tone === 'green') return colorize(part.text, 'green');
     if (part.tone === 'gold') return colorize(part.text, 'yellow');
     if (part.tone === 'purple') return colorize(part.text, 'magenta');

@@ -563,7 +563,7 @@ function buildMoments(codex, analysis, run, locale) {
           { text: `你在第 ${fastenGain.floor} 层就获得了` },
           buildTagPart('card', fastenGain),
           ...(run.win
-            ? [{ text: ', 然后一路舒服地前进.' }]
+            ? [{ text: ', 充足的格挡值, 让爬塔如同给大脑按摩一般享受.' }]
             : [{ text: ', 但这仍然没能拯救这局游戏...', tone: 'red' }]),
         ]
         : [
@@ -657,7 +657,11 @@ function buildMoments(codex, analysis, run, locale) {
       id: 'no-rest-win',
       parts: locale === 'zh'
         ? [
-          { text: '你一觉都没有睡过, 一口气爬上了塔顶, 建筑师惊呆了.' },
+          { text: '和多数人不同, 你完全没有' },
+          { text: '休息', tone: 'red' },
+          { text: '过, 马不停蹄地冲上了塔顶. 你的黑眼圈让建筑师' },
+          { text: '惊呆', tone: 'gold' },
+          { text: '了.' },
         ]
         : [
           { text: 'You never rested once, climbed all the way to the top in one go, and left The Architect stunned.' },
@@ -702,7 +706,10 @@ function buildMoments(codex, analysis, run, locale) {
       id: 'perfect-act3-bosses',
       parts: locale === 'zh'
         ? [
-          { text: '真是一场大胜! 最后的 2 个 Boss 都不能伤到你分毫.' },
+          { text: '真是一场大胜! 最后的双重 Boss 对你造成了 ' },
+          { text: '0', tone: 'red' },
+          { text: ' 点伤害. ' },
+          { text: '你是怎么做到的?!', tone: 'red-italic' },
         ]
         : [
           { text: 'What a finish. The final 2 bosses could not lay a finger on you.' },
