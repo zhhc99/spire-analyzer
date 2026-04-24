@@ -108,9 +108,13 @@ const ANSI = {
   reset: '\x1b[0m',
   dim: '\x1b[2m',
   bold: '\x1b[1m',
+  underline: '\x1b[4m',
+  underlineOff: '\x1b[24m',
   red: '\x1b[31m',
   green: '\x1b[32m',
   yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
   cyan: '\x1b[36m',
   inverse: '\x1b[7m',
   clear: '\x1b[2J\x1b[H',
@@ -382,18 +386,49 @@ async function resolvePlayerSelector(run, args, locale, fileLabel) {
 }
 
 function getSourceTag(source, locale) {
-  if (source === 'boss') return { text: locale === 'zh' ? '👑 Boss' : '👑 Boss', color: 'yellow' };
-  if (source === 'elite') return { text: locale === 'zh' ? '😈 精英' : '😈 Elite', color: 'red' };
+  if (source === 'boss') return { text: locale === 'zh' ? '👑 Boss' : '👑 Boss', color: 'magenta' };
+  if (source === 'remove') return { text: locale === 'zh' ? '❌ 移除' : '❌ Remove', color: 'red' };
+  if (source === 'elite') return { text: locale === 'zh' ? '😈 精英' : '😈 Elite', color: 'magenta' };
   if (source === 'ancient') return { text: locale === 'zh' ? '🧿 先古' : '🧿 Ancient', color: 'cyan' };
   if (source === 'treasure') return { text: locale === 'zh' ? '🎁 宝箱' : '🎁 Treasure', color: 'yellow' };
   if (source === 'shop') return { text: locale === 'zh' ? '🛒 商店' : '🛒 Shop', color: 'green' };
   if (source === 'event') return { text: locale === 'zh' ? '🎲 事件' : '🎲 Event', color: 'cyan' };
-  return { text: locale === 'zh' ? '• 普通' : '• Normal', color: 'dim' };
+  return { text: locale === 'zh' ? '⚪ 普通' : '⚪ Normal', color: 'dim' };
+}
+
+function colorizeRarityText(label, rarity) {
+  if (rarity === 'rare') return colorize(label, 'yellow');
+  if (rarity === 'uncommon') return colorize(label, 'blue');
+  return label;
+}
+
+function underlineCardLabel(label, rarity) {
+  if (!stdout.isTTY || !rarity) return label;
+  const underlineColor = rarity === 'rare'
+    ? '\x1b[58;2;255;209;128m'
+    : rarity === 'uncommon'
+      ? '\x1b[58;2;138;180;255m'
+      : '';
+  if (!underlineColor) return label;
+  return `${ANSI.underline}${underlineColor}${label}\x1b[59m${ANSI.underlineOff}`;
+}
+
+function formatCardLabel(entry, picked, dim) {
+  const label = underlineCardLabel(entry.label, entry.rarity);
+  if (picked) return colorize(label, 'green');
+  return dim(label);
+}
+
+function buildChoiceEntries(item, dim) {
+  return [
+    ...(item.picked ? [`${colorize('✓', 'green')} ${formatCardLabel(item.picked, true, dim)}`] : []),
+    ...item.skipped.map(entry => formatCardLabel(entry, false, dim)),
+  ];
 }
 
 function formatChoiceTrail(locale, item, dim) {
   const parts = [];
-  parts.push(item.picked ? colorize(`✓ ${item.picked.label}`, 'green') : dim(t(locale, 'none')));
+  if (item.picked) parts.push(colorize(item.picked.label, 'green'));
   if (item.skipped.length) parts.push(...item.skipped.map(entry => dim(entry.label)));
   return parts.join(' ');
 }
@@ -406,9 +441,56 @@ function renderViewerTabs(locale, sections, sectionIndex) {
     .join(colorize('  ', 'dim'));
 }
 
+function formatMomentParts(parts) {
+  return parts.map(part => {
+    if (part.tone === 'red') return colorize(part.text, 'red');
+    if (part.tone === 'green') return colorize(part.text, 'green');
+    if (part.tone === 'gold') return colorize(part.text, 'yellow');
+    if (part.tone === 'purple') return colorize(part.text, 'magenta');
+    if (part.tone === 'tag') {
+      const icon = part.kind === 'card' ? '🃏 ' : part.kind === 'relic' ? '🧿 ' : '';
+      return colorize(`[${icon}${part.text}]`, 'cyan');
+    }
+    return part.text;
+  }).join('');
+}
+
 function padViewerColumns(items) {
   const width = Math.max(...items.map(item => displayWidth(item.prefix)), 0);
   return items.map(item => `${padDisplayEnd(item.prefix, width)} ${item.label}`);
+}
+
+function alignAncientChoiceRows(items, locale, dim) {
+  const labelWidth = Math.max(...items.map(item => displayWidth(item.label)), 0);
+  const choiceMatrix = items.map(item => buildChoiceEntries(item, dim));
+  const choiceWidths = [];
+  choiceMatrix.forEach(row => {
+    row.forEach((entry, index) => {
+      choiceWidths[index] = Math.max(choiceWidths[index] || 0, displayWidth(entry));
+    });
+  });
+  return items.map((item, index) => {
+    const choices = choiceMatrix[index].map((entry, choiceIndex) => padDisplayEnd(entry, choiceWidths[choiceIndex])).join(' ');
+    return `  ${padDisplayEnd(item.label, labelWidth)} | ${choices}${item.rewardSummary ? ` | ${dim(item.rewardSummary)}` : ''}`;
+  });
+}
+
+function alignChoiceRows(items, locale, dim) {
+  const labelWidth = Math.max(...items.map(item => displayWidth(item.label)), 0);
+  const choiceMatrix = items.map(item => [
+    ...(item.picked ? [colorize(item.picked.label, 'green')] : []),
+    ...item.skipped.map(entry => dim(entry.label)),
+  ]);
+  const choiceWidths = [];
+  choiceMatrix.forEach(row => {
+    row.forEach((entry, index) => {
+      choiceWidths[index] = Math.max(choiceWidths[index] || 0, displayWidth(entry));
+    });
+  });
+  return items.map((item, index) => {
+    const choices = choiceMatrix[index].map((entry, choiceIndex) => padDisplayEnd(entry, choiceWidths[choiceIndex])).join(' ');
+    return `  ${padDisplayEnd(item.label, labelWidth)} | ${choices}`;
+  });
 }
 
 function wrapDisplayText(text, width) {
@@ -439,6 +521,8 @@ function wrapDisplayText(text, width) {
 
 function buildViewerSections(report) {
   const dim = text => colorize(text, 'dim');
+  const cardsLegendLabel = `${report.locale === 'zh' ? '图例' : 'Legend'}:`;
+  const cardsLegendIndent = dim(' '.repeat(displayWidth(cardsLegendLabel) + 1));
   return [
     {
       key: 'overview',
@@ -448,24 +532,29 @@ function buildViewerSections(report) {
         ...report.warnings.map(item => `! ${item}`),
         '',
         t(report.locale, 'summary'),
-        `  ${t(report.locale, 'hpCompact')}♥️ ${report.cli.finalHp} | ${t(report.locale, 'goldCompact')}🪙 ${report.cli.goldSpent} | ${t(report.locale, 'relicsCompact')}🧿 ${report.cli.pathStats.relics}`,
-        `  ${t(report.locale, 'deckCompact')}🃏 ${report.cli.pathStats.finalDeck} | ${t(report.locale, 'chosenCards')}: ${formatCountByAct(report.locale, report.cli.actCardRewardCounts, report.cli.actNames)}`,
+        `  ${t(report.locale, 'hpCompact')}💗 ${report.cli.finalHp} | ${t(report.locale, 'goldCompact')}🪙 ${report.cli.goldSpent} | ${t(report.locale, 'relicsCompact')}🧿 ${report.cli.pathStats.relics}`,
+        `  ${t(report.locale, 'deckCompact')}🃏 ${report.cli.pathStats.finalDeck} | ${formatCountByAct(report.locale, report.cli.actCardRewardCounts, report.cli.actNames)} / ${t(report.locale, 'removedCards')} ${report.cli.removedCards}`,
         `  ${t(report.locale, 'restCompact')}🔥 ${report.cli.pathStats.restSites} | ${t(report.locale, 'rest')} ${report.cli.pathStats.restCount} / ${t(report.locale, 'smith')} ${report.cli.pathStats.smithCount} / ${t(report.locale, 'other')} ${report.cli.otherRestCount}`,
         `  ${t(report.locale, 'elitesCompact')}😈 ${report.cli.pathStats.eliteCount} | ${formatCountByAct(report.locale, report.cli.actEliteCounts, report.cli.actNames)}`,
         '',
+        report.momentsTitle,
+        ...(report.moments.length
+          ? report.moments.map(item => `  ${formatMomentParts(item.parts)}`)
+          : [`  ${report.momentsEmpty}`]),
+        '',
         report.ancientChoicesTitle,
         ...(report.ancientChoices.length
-          ? report.ancientChoices.map(item => `  ${item.label} | ${formatChoiceTrail(report.locale, item, dim)}${item.rewardSummary ? ` | ${dim(item.rewardSummary)}` : ''}`)
+          ? alignAncientChoiceRows(report.ancientChoices, report.locale, dim)
           : [`  ${report.bossRewardsEmpty}`]),
         '',
         report.bossRewardsTitle,
         ...(report.bossRewards.length
-          ? report.bossRewards.map(item => `  ${item.label} | ${formatChoiceTrail(report.locale, item, dim)}`)
+          ? alignChoiceRows(report.bossRewards, report.locale, dim)
           : [`  ${report.bossRewardsEmpty}`]),
         '',
         report.openingRewardsTitle,
         ...(report.openingRewards.length
-          ? report.openingRewards.map(item => `  ${item.label} | ${formatChoiceTrail(report.locale, item, dim)}`)
+          ? alignChoiceRows(report.openingRewards, report.locale, dim)
           : [`  ${report.openingRewardsEmpty}`]),
         '',
         report.toughestFightsTitle,
@@ -482,16 +571,20 @@ function buildViewerSections(report) {
       title: t(report.locale, 'viewerCards'),
       lines: report.allCardPicks.length
         ? [
-          `${dim(`${report.locale === 'zh' ? '图例' : 'Legend'}:`)} ${colorize(getSourceTag('monster', report.locale).text, getSourceTag('monster', report.locale).color)}  ${colorize(getSourceTag('elite', report.locale).text, getSourceTag('elite', report.locale).color)}  ${colorize(getSourceTag('boss', report.locale).text, getSourceTag('boss', report.locale).color)}`,
+          `${dim(cardsLegendLabel)} ${colorize(getSourceTag('monster', report.locale).text, getSourceTag('monster', report.locale).color)}  ${colorize(getSourceTag('elite', report.locale).text, getSourceTag('elite', report.locale).color)}  ${colorize(getSourceTag('boss', report.locale).text, getSourceTag('boss', report.locale).color)}`,
+          `${cardsLegendIndent}${colorize(getSourceTag('shop', report.locale).text, getSourceTag('shop', report.locale).color)}  ${colorize(getSourceTag('event', report.locale).text, getSourceTag('event', report.locale).color)}  ${colorize(getSourceTag('remove', report.locale).text, getSourceTag('remove', report.locale).color)}`,
           '',
           report.allCardPicksTitle,
           ...report.allCardPicks.flatMap(group => [
             `  ${group.actName}`,
             ...padViewerColumns(group.picks.map(item => {
               const tag = getSourceTag(item.source, report.locale);
+              const floorWidth = String(Math.max(...group.picks.map(entry => entry.floor))).length;
               return {
-                prefix: `    F${item.floor} ${colorize(tag.text, tag.color)}`,
-                label: item.label,
+                prefix: `    F${String(item.floor).padEnd(floorWidth, ' ')} ${colorize(tag.text, tag.color)}`,
+                label: item.state === 'removed'
+                  ? dim(item.label)
+                  : colorizeRarityText(item.label, item.rarity),
               };
             })),
             '',
@@ -514,8 +607,9 @@ function buildViewerSections(report) {
             `  ${group.actName}`,
             ...padViewerColumns(group.relics.map(item => {
               const tag = getSourceTag(item.source, report.locale);
+              const floorWidth = String(Math.max(...group.relics.map(entry => entry.floor))).length;
               return {
-                prefix: `    F${item.floor} ${colorize(tag.text, tag.color)}`,
+                prefix: `    F${String(item.floor).padEnd(floorWidth, ' ')} ${colorize(tag.text, tag.color)}`,
                 label: item.label,
               };
             })),
@@ -531,7 +625,7 @@ function buildViewerSections(report) {
         const block = [
           item.title,
           `  ${item.subtitle}`,
-          `  ❤️ ${item.hp || '-'} · 🪙 ${item.gold || '0'} · 💥 ${report.locale === 'zh' ? `${item.damageTaken} 伤害` : `${item.damageTaken} dmg`}${item.turnsTaken ? ` · 🔄 ${report.locale === 'zh' ? `${item.turnsTaken} 回合` : `${item.turnsTaken} turns`}` : ''}${item.restAction ? ` · 🔥 ${item.restAction}` : ''}`,
+          `  💗 ${item.hp || '-'} · 🪙 ${item.gold || '0'} · 💥 ${report.locale === 'zh' ? `${item.damageTaken} 伤害` : `${item.damageTaken} dmg`}${item.turnsTaken ? ` · 🔄 ${report.locale === 'zh' ? `${item.turnsTaken} 回合` : `${item.turnsTaken} turns`}` : ''}${item.restAction ? ` · 🔥 ${item.restAction}` : ''}`,
         ];
         if (item.rewardChoices.picked || item.rewardChoices.skipped.length) {
           block.push(`  🃏 ${formatChoiceTrail(report.locale, item.rewardChoices, dim)}`);
@@ -539,8 +633,8 @@ function buildViewerSections(report) {
         if (item.ancientChoice) {
           block.push(`  🧿 ${formatChoiceTrail(report.locale, item.ancientChoice, dim)}`);
         }
-        if (item.relicRewards.length || item.potionRewards.length) {
-          block.push(`  🎁 ${[...item.relicRewards.map(entry => entry.label), ...item.potionRewards.map(entry => entry.label)].join(', ')}`);
+        if (item.rewardItems.length) {
+          block.push(`  🎁 ${item.rewardItems.map(entry => entry.label).join(', ')}`);
         }
         block.push('');
         return block;
@@ -662,7 +756,7 @@ function renderReport(report) {
   const statusColor = report.cli.resultTone === 'success' ? 'green' : report.cli.resultTone === 'danger' ? 'red' : 'yellow';
   const dim = text => colorize(text, 'dim');
   const bold = text => colorize(text, 'bold');
-  const actCardText = `${t(report.locale, 'chosenCards')}: ${formatCountByAct(report.locale, report.cli.actCardRewardCounts, report.cli.actNames)}`;
+  const actCardText = `${formatCountByAct(report.locale, report.cli.actCardRewardCounts, report.cli.actNames)} / ${t(report.locale, 'removedCards')} ${report.cli.removedCards}`;
   const restText = `${t(report.locale, 'rest')} ${report.cli.pathStats.restCount} / ${t(report.locale, 'smith')} ${report.cli.pathStats.smithCount} / ${t(report.locale, 'other')} ${report.cli.otherRestCount}`;
   const actEliteText = formatCountByAct(report.locale, report.cli.actEliteCounts, report.cli.actNames);
   const deckLead = `${t(report.locale, 'deckCompact')}🃏 ${report.cli.pathStats.finalDeck}`;
@@ -678,25 +772,23 @@ function renderReport(report) {
   }
   lines.push('');
   lines.push(bold(t(report.locale, 'summary')));
-  lines.push(`  ${t(report.locale, 'hpCompact')}♥️ ${report.cli.finalHp} | ${t(report.locale, 'goldCompact')}🪙 ${report.cli.goldSpent} | ${t(report.locale, 'relicsCompact')}🧿 ${report.cli.pathStats.relics}`);
+  lines.push(`  ${t(report.locale, 'hpCompact')}💗 ${report.cli.finalHp} | ${t(report.locale, 'goldCompact')}🪙 ${report.cli.goldSpent} | ${t(report.locale, 'relicsCompact')}🧿 ${report.cli.pathStats.relics}`);
   lines.push(`  ${padDisplayEnd(deckLead, leftWidth)} | ${dim(actCardText)}`);
   lines.push(`  ${padDisplayEnd(restLead, leftWidth)} | ${dim(restText)}`);
   lines.push(`  ${padDisplayEnd(eliteLead, leftWidth)} | ${dim(actEliteText)}`);
   lines.push('');
+  lines.push(bold(report.momentsTitle));
+  if (!report.moments.length) lines.push(`  ${dim(report.momentsEmpty)}`);
+  else report.moments.forEach(item => lines.push(`  ${formatMomentParts(item.parts)}`));
+  lines.push('');
   if (report.ancientChoices.length) {
     lines.push(bold(report.ancientChoicesTitle));
-    report.ancientChoices.forEach(item => {
-      const options = [
-        item.picked ? colorize(`✓ ${item.picked.label}`, 'green') : dim(t(report.locale, 'none')),
-        ...item.skipped.map(entry => dim(entry.label)),
-      ].join(' ');
-      lines.push(`  ${item.label} | ${options}${item.rewardSummary ? ` | ${dim(item.rewardSummary)}` : ''}`);
-    });
+    lines.push(...alignAncientChoiceRows(report.ancientChoices, report.locale, dim));
     lines.push('');
   }
   lines.push(bold(report.bossRewardsTitle));
   if (!report.bossRewards.length) lines.push(`  ${dim(report.bossRewardsEmpty)}`);
-  else report.bossRewards.forEach(item => lines.push(`  ${item.label} | ${formatChoiceTrail(report.locale, item, dim)}`));
+  else lines.push(...alignChoiceRows(report.bossRewards, report.locale, dim));
   lines.push('');
   lines.push(bold(report.toughestFightsTitle));
   if (!report.toughestFights.length) lines.push(`  ${dim(report.toughestFightsEmpty)}`);
@@ -707,7 +799,7 @@ function renderReport(report) {
   lines.push('');
   lines.push(bold(report.openingRewardsTitle));
   if (!report.openingRewards.length) lines.push(`  ${dim(report.openingRewardsEmpty)}`);
-  else report.openingRewards.forEach(item => lines.push(`  ${item.label} | ${formatChoiceTrail(report.locale, item, dim)}`));
+  else lines.push(...alignChoiceRows(report.openingRewards, report.locale, dim));
   return `${lines.join('\n')}\n`;
 }
 

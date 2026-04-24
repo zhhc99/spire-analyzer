@@ -57,8 +57,11 @@ function resolveCardLabel(codex, card) {
   const data = readCard(codex, stripPrefix(card?.id));
   const fallback = toPrettyFallback(card?.id);
   return {
+    id: stripPrefix(card?.id),
     label: withUpgradeSuffix(data?.name || fallback || t('en', 'unknown'), card?.current_upgrade_level || 0),
     imageUrl: imageUrl(data?.image_url),
+    rarity: String(data?.rarity_key || data?.rarity || '').toLowerCase(),
+    type: String(data?.type_key || data?.type || '').toLowerCase(),
   };
 }
 
@@ -97,6 +100,14 @@ function buildActNames(codex, acts) {
 
 function buildSparkPoints(values) {
   return values.filter(point => Number.isFinite(point.y));
+}
+
+function shiftMatch(items, rawId) {
+  const target = stripPrefix(rawId);
+  const index = items.findIndex(item => stripPrefix(item) === target);
+  if (index === -1) return false;
+  items.splice(index, 1);
+  return true;
 }
 
 export function parseRunText(text) {
@@ -167,6 +178,7 @@ function analyzeRun(run, playerRecord) {
   const topDamageFights = [];
   const actCardRewardCounts = run.map_point_history.map(() => 0);
   const actEliteCounts = run.map_point_history.map(() => 0);
+  const actRemovedCounts = run.map_point_history.map(() => 0);
   let goldSpent = 0;
   let restSites = 0;
   let restCount = 0;
@@ -195,9 +207,10 @@ function analyzeRun(run, playerRecord) {
     }
     goldSpent += Number(stats.gold_spent || 0);
     const choices = safeArray(stats.card_choices);
+    actCardRewardCounts[node.actIndex] += safeArray(stats.cards_gained).filter(card => card?.id).length;
+    actRemovedCounts[node.actIndex] += safeArray(stats.cards_removed).filter(card => card?.id).length;
     if (choices.length) {
       cardRewardNodes.push(node);
-      actCardRewardCounts[node.actIndex] += choices.filter(choice => choice?.was_picked).length;
       if (node.roomType === 'boss') bossRewardNodes.push(node);
       if (COMBAT_ROOM_TYPES.has(node.roomType)) combatRewardNodes.push(node);
     }
@@ -229,6 +242,7 @@ function analyzeRun(run, playerRecord) {
     smithCount,
     otherRestCount,
     actEliteCounts,
+    actRemovedCounts,
     actCardRewardCounts,
     lowestHpPoint,
     cardRewardNodes,
@@ -245,6 +259,64 @@ function buildChoiceList(codex, choices) {
     picked: picked ? resolveCardLabel(codex, picked.card) : null,
     skipped: choices.filter(choice => !choice?.was_picked).map(choice => resolveCardLabel(codex, choice.card)),
   };
+}
+
+function buildCardActivityItems(codex, node) {
+  const stats = node.stats || {};
+  const pickedChoiceIds = safeArray(stats.card_choices)
+    .filter(choice => choice?.was_picked && choice.card?.id)
+    .map(choice => choice.card.id);
+  const items = safeArray(stats.card_choices)
+    .filter(choice => choice?.card)
+    .map(choice => ({
+      ...resolveCardLabel(codex, choice.card),
+      state: choice?.was_picked ? 'picked' : 'skipped',
+      source: node.roomType,
+    }));
+  safeArray(stats.cards_gained)
+    .filter(card => card?.id)
+    .forEach(card => {
+      if (shiftMatch(pickedChoiceIds, card.id)) return;
+      items.push({
+        ...resolveCardLabel(codex, card),
+        state: 'picked',
+        source: node.roomType,
+      });
+    });
+  safeArray(stats.cards_removed)
+    .filter(card => card?.id)
+    .forEach(card => {
+      items.push({
+        ...resolveCardLabel(codex, card),
+        state: 'removed',
+        source: 'remove',
+      });
+    });
+  return items;
+}
+
+function buildRelicGainItems(codex, node) {
+  const ancientPicked = safeArray(node.stats?.ancient_choice).find(item => item?.was_chosen);
+  const ancientRelicId = ancientPicked?.TextKey || ancientPicked?.choice || '';
+  const items = [];
+  if (ancientPicked) {
+    items.push({
+      ...resolveRelicLabel(codex, ancientRelicId),
+      id: ancientRelicId,
+      source: 'ancient',
+    });
+  }
+  safeArray(node.stats?.relic_choices)
+    .filter(choice => choice?.was_picked !== false && choice.choice)
+    .filter(choice => stripPrefix(choice.choice) !== stripPrefix(ancientRelicId))
+    .forEach(choice => {
+      items.push({
+        ...resolveRelicLabel(codex, choice.choice),
+        id: choice.choice,
+        source: node.roomType,
+      });
+    });
+  return items;
 }
 
 function buildAncientChoiceList(codex, node, actName, locale) {
@@ -327,11 +399,28 @@ function buildFloorDetails(codex, analysis, actNames, locale) {
   return analysis.nodes.map(node => {
     const stats = node.stats || {};
     const rewardChoices = buildChoiceList(codex, safeArray(stats.card_choices));
+    const cardActivities = buildCardActivityItems(codex, node);
     const ancientChoices = safeArray(stats.ancient_choice);
     const ancientPicked = ancientChoices.find(item => item?.was_chosen);
     const ancientSkipped = ancientChoices.filter(item => !item?.was_chosen);
     const relicChoices = ancientChoices.length ? [] : safeArray(stats.relic_choices).filter(item => item?.choice);
     const potionChoices = safeArray(stats.potion_choices).filter(item => item?.choice);
+    const rewardItems = [
+      ...cardActivities.filter(item => item.state === 'picked').map(item => ({
+        label: item.label,
+        imageUrl: item.imageUrl,
+        rarity: item.rarity,
+        kind: 'card',
+      })),
+      ...relicChoices.filter(item => item.was_picked !== false).map(item => ({
+        ...resolveRelicLabel(codex, item.choice),
+        kind: 'relic',
+      })),
+      ...potionChoices.filter(item => item.was_picked !== false).map(item => ({
+        ...resolvePotionLabel(codex, item.choice),
+        kind: 'potion',
+      })),
+    ];
     return {
       floor: node.floor,
       optionLabel: locale === 'zh'
@@ -346,12 +435,12 @@ function buildFloorDetails(codex, analysis, actNames, locale) {
       damageTaken: Number(stats.damage_taken || 0),
       turnsTaken: Number(node.turnsTaken || 0),
       rewardChoices,
+      cardActivities,
       ancientChoice: ancientChoices.length ? {
         picked: ancientPicked ? resolveRelicLabel(codex, ancientPicked.TextKey || ancientPicked.choice) : null,
         skipped: ancientSkipped.map(item => resolveRelicLabel(codex, item.TextKey || item.choice)),
       } : null,
-      relicRewards: relicChoices.filter(item => item.was_picked !== false).map(item => resolveRelicLabel(codex, item.choice)),
-      potionRewards: potionChoices.filter(item => item.was_picked !== false).map(item => resolvePotionLabel(codex, item.choice)),
+      rewardItems,
       restAction: formatRestAction(locale, safeArray(stats.rest_site_choices)[0] || ''),
     };
   });
@@ -360,22 +449,18 @@ function buildFloorDetails(codex, analysis, actNames, locale) {
 function buildAllCardPicks(codex, analysis, actNames) {
   const groups = actNames.map((actName, index) => ({
     actName,
-    picks: analysis.cardRewardNodes
+    picks: analysis.nodes
       .filter(node => node.actIndex === index)
-      .map(node => {
-        const picked = safeArray(node.stats?.card_choices).find(choice => choice?.was_picked);
-        if (!picked?.card) return null;
-        const card = resolveCardLabel(codex, picked.card);
-        return {
+      .flatMap(node => buildCardActivityItems(codex, node)
+        .filter(item => item.state !== 'skipped')
+        .map(item => ({
           floor: node.floor,
-          label: card.label,
-          imageUrl: card.imageUrl,
-          boss: node.roomType === 'boss',
-          elite: node.roomType === 'elite',
-          source: node.roomType,
-        };
-      })
-      .filter(Boolean),
+          label: item.label,
+          imageUrl: item.imageUrl,
+          rarity: item.rarity,
+          state: item.state,
+          source: item.source,
+        }))),
   }));
   return groups.filter(group => group.picks.length);
 }
@@ -385,35 +470,325 @@ function buildAllRelics(codex, analysis, actNames) {
     actName,
     relics: analysis.nodes
       .filter(node => node.actIndex === index)
-      .flatMap(node => {
-        const ancientPicked = safeArray(node.stats?.ancient_choice).find(item => item?.was_chosen);
-        const ancientRelicId = ancientPicked?.TextKey || ancientPicked?.choice || '';
-        const items = [];
-        if (ancientPicked) {
-          const ancientRelic = resolveRelicLabel(codex, ancientRelicId);
-          items.push({
-            floor: node.floor,
-            label: ancientRelic.label,
-            imageUrl: ancientRelic.imageUrl,
-            source: 'ancient',
-          });
-        }
-        safeArray(node.stats?.relic_choices)
-          .filter(choice => choice?.was_picked !== false && choice.choice)
-          .filter(choice => stripPrefix(choice.choice) !== stripPrefix(ancientRelicId))
-          .forEach(choice => {
-            const relic = resolveRelicLabel(codex, choice.choice);
-            items.push({
-              floor: node.floor,
-              label: relic.label,
-              imageUrl: relic.imageUrl,
-              source: node.roomType,
-            });
-          });
-        return items;
-      }),
+      .flatMap(node => buildRelicGainItems(codex, node).map(item => ({
+        floor: node.floor,
+        label: item.label,
+        imageUrl: item.imageUrl,
+        source: item.source,
+      }))),
   }));
   return groups.filter(group => group.relics.length);
+}
+
+function buildTagPart(kind, entity) {
+  return {
+    text: entity.label,
+    tone: 'tag',
+    kind,
+    imageUrl: entity.imageUrl,
+    rarity: entity.rarity,
+  };
+}
+
+function buildMoments(codex, analysis, run, locale) {
+  const moments = [];
+  const relicTimeline = analysis.nodes.flatMap(node => buildRelicGainItems(codex, node).map(item => ({ ...item, floor: node.floor })));
+  const cardTimeline = analysis.nodes.flatMap(node => buildCardActivityItems(codex, node)
+    .filter(item => item.state === 'picked')
+    .map(item => ({ ...item, floor: node.floor, actIndex: node.actIndex })));
+  const lowHpNode = run.win
+    ? analysis.nodes
+      .filter(node => Number.isFinite(node.stats?.current_hp) && node.stats.current_hp <= 3)
+      .sort((left, right) => left.stats.current_hp - right.stats.current_hp || right.floor - left.floor)[0]
+    : null;
+  if (lowHpNode) {
+    moments.push({
+      id: 'close-call',
+      parts: locale === 'zh'
+        ? [
+          { text: `你在第 ${lowHpNode.floor} 层距离死亡` },
+          { text: '一线之隔', tone: 'red' },
+          { text: ', 只剩 ' },
+          { text: `${lowHpNode.stats.current_hp} HP`, tone: 'red' },
+          { text: ', 但最终活了下来并走向了' },
+          { text: '胜利', tone: 'green' },
+          { text: '.' },
+        ]
+        : [
+          { text: `On floor ${lowHpNode.floor}, you were ` },
+          { text: 'one hit from death', tone: 'red' },
+          { text: ' at just ' },
+          { text: `${lowHpNode.stats.current_hp} HP`, tone: 'red' },
+          { text: ', then held on and reached ' },
+          { text: 'victory', tone: 'green' },
+          { text: '.' },
+        ],
+    });
+  }
+  const pantographGain = relicTimeline.find(item => stripPrefix(item.id) === 'PANTOGRAPH');
+  const pantographRelic = resolveRelicLabel(codex, 'RELIC.PANTOGRAPH');
+  const elitesAfterPantograph = pantographGain
+    ? analysis.nodes.filter(node => node.roomType === 'elite' && node.floor > pantographGain.floor && Number(node.stats?.current_hp) > 0).length
+    : 0;
+  if (pantographGain && elitesAfterPantograph >= 5) {
+    moments.push({
+      id: 'pantograph',
+      parts: locale === 'zh'
+        ? [
+          { text: `你在第 ${pantographGain.floor} 层获得了` },
+          buildTagPart('relic', pantographRelic),
+          { text: ', 然后一路斩杀 ' },
+          { text: `${elitesAfterPantograph} 只 😈 精英`, tone: 'gold' },
+          ...(run.win
+            ? [{ text: '. 这为你带来了十足的底气.' }]
+            : [{ text: '. 这为你带来了十足的底气, ' }, { text: '但最终未能如愿...', tone: 'red' }]),
+        ]
+        : [
+          { text: `You picked up ` },
+          buildTagPart('relic', pantographRelic),
+          { text: ` on floor ${pantographGain.floor}, then went on to slay ` },
+          { text: `${elitesAfterPantograph} 😈 elites`, tone: 'gold' },
+          ...(run.win
+            ? [{ text: '. It gave you every reason to believe.' }]
+            : [{ text: '. It gave you every reason to believe, ' }, { text: 'but it still was not enough...', tone: 'red' }]),
+        ],
+    });
+  }
+  const fastenGain = cardTimeline.find(item => item.id === 'FASTEN' && item.actIndex === 0);
+  if (fastenGain) {
+    moments.push({
+      id: 'fasten',
+      parts: locale === 'zh'
+        ? [
+          { text: `你在第 ${fastenGain.floor} 层就获得了` },
+          buildTagPart('card', fastenGain),
+          ...(run.win
+            ? [{ text: ', 然后一路舒服地前进.' }]
+            : [{ text: ', 但这仍然没能拯救这局游戏...', tone: 'red' }]),
+        ]
+        : [
+          { text: `You found ` },
+          buildTagPart('card', fastenGain),
+          { text: ` as early as floor ${fastenGain.floor}` },
+          ...(run.win
+            ? [{ text: ', then cruised forward with ease.' }]
+            : [{ text: ', but even that could not save the run...', tone: 'red' }]),
+        ],
+    });
+  }
+  const finalDeckIds = safeArray(analysis.player.deck).map(card => stripPrefix(card?.id || card));
+  if (['SPLASH', 'DISCOVERY', 'JACKPOT'].every(id => finalDeckIds.includes(id))) {
+    const splash = resolveCardLabel(codex, { id: 'CARD.SPLASH' });
+    const discovery = resolveCardLabel(codex, { id: 'CARD.DISCOVERY' });
+    const jackpot = resolveCardLabel(codex, { id: 'CARD.JACKPOT' });
+    moments.push({
+      id: 'colorless-trio',
+      parts: locale === 'zh'
+        ? [
+          { text: '你居然集齐了' },
+          buildTagPart('card', splash),
+          { text: ', ' },
+          buildTagPart('card', discovery),
+          { text: ' 和 ' },
+          buildTagPart('card', jackpot),
+          { text: '! 这简直是人生的享受.' },
+        ]
+        : [
+          { text: 'You somehow assembled ' },
+          buildTagPart('card', splash),
+          { text: ', ' },
+          buildTagPart('card', discovery),
+          { text: ', and ' },
+          buildTagPart('card', jackpot),
+          { text: '. That is pure luxury.' },
+        ],
+    });
+  }
+  const skulkingFight = analysis.nodes
+    .filter(node => stripPrefix(node.modelId) === 'SKULKING_COLONY_ELITE' && Number(node.stats?.damage_taken) > 20)
+    .find(node => !cardTimeline.some(item => item.floor < node.floor && (item.type === 'skill' || item.type === 'power')));
+  if (skulkingFight) {
+    const skulking = resolveEncounterLabel(codex, skulkingFight.modelId);
+    moments.push({
+      id: 'skulking-bloodbath',
+      parts: locale === 'zh'
+        ? [
+          { text: '你信心满满走进了精英房间, 结果运气不佳, 遇到了' },
+          buildTagPart('encounter', { label: skulking, imageUrl: null }),
+          { text: ', 被狠狠放了一波' },
+          { text: '大血', tone: 'red' },
+          { text: '.' },
+        ]
+        : [
+          { text: 'You walked into an elite room full of confidence, then ran into ' },
+          buildTagPart('encounter', { label: skulking, imageUrl: null }),
+          { text: ' and got chunked for ' },
+          { text: 'massive damage', tone: 'red' },
+          { text: '.' },
+        ],
+    });
+  }
+  const runicPyramidGain = relicTimeline.find(item => stripPrefix(item.id) === 'RUNIC_PYRAMID');
+  if (runicPyramidGain) {
+    const runicPyramid = resolveRelicLabel(codex, 'RELIC.RUNIC_PYRAMID');
+    moments.push({
+      id: 'runic-pyramid',
+      parts: locale === 'zh'
+        ? [
+          { text: `你在第 ${runicPyramidGain.floor} 层拿到了` },
+          buildTagPart('relic', runicPyramid),
+          { text: ', 这无异于打开了官方外挂' },
+          ...(run.win
+            ? [{ text: '.' }]
+            : [{ text: '...但你居然没能走到最后!?', tone: 'red' }]),
+        ]
+        : [
+          { text: `You found ` },
+          buildTagPart('relic', runicPyramid),
+          { text: ` on floor ${runicPyramidGain.floor}. It practically felt like cheating` },
+          ...(run.win
+            ? [{ text: '.' }]
+            : [{ text: '...and you still did not make it to the end!?', tone: 'red' }]),
+        ],
+    });
+  }
+  const finalRelicIds = safeArray(analysis.player.relics).map(item => stripPrefix(item?.id || item));
+  if (['LANTERN', 'CANDELABRA', 'CHANDELIER'].every(id => finalRelicIds.includes(id))) {
+    const lantern = resolveRelicLabel(codex, 'RELIC.LANTERN');
+    const candelabra = resolveRelicLabel(codex, 'RELIC.CANDELABRA');
+    const chandelier = resolveRelicLabel(codex, 'RELIC.CHANDELIER');
+    moments.push({
+      id: 'lights',
+      parts: locale === 'zh'
+        ? [
+          { text: '你集齐了' },
+          buildTagPart('relic', lantern),
+          { text: ', ' },
+          buildTagPart('relic', candelabra),
+          { text: ' 和 ' },
+          buildTagPart('relic', chandelier),
+          { text: ', 你的眼前' },
+          { text: '一片明亮', tone: 'gold' },
+          { text: '.' },
+        ]
+        : [
+          { text: 'You assembled ' },
+          buildTagPart('relic', lantern),
+          { text: ', ' },
+          buildTagPart('relic', candelabra),
+          { text: ', and ' },
+          buildTagPart('relic', chandelier),
+          { text: '. Suddenly, everything felt ' },
+          { text: 'bright', tone: 'gold' },
+          { text: '.' },
+        ],
+    });
+  }
+  const quadcastGain = cardTimeline.find(item => item.id === 'QUADCAST');
+  const darknessGain = cardTimeline.find(item => item.id === 'DARKNESS');
+  if (quadcastGain && !darknessGain && !run.win) {
+    const quadcast = resolveCardLabel(codex, { id: 'CARD.QUADCAST' });
+    const darkness = resolveCardLabel(codex, { id: 'CARD.DARKNESS' });
+    moments.push({
+      id: 'quadcast-miss',
+      parts: locale === 'zh'
+        ? [
+          { text: `你在第 ${quadcastGain.floor} 层拿到了` },
+          buildTagPart('card', quadcast),
+          { text: ', 但无论如何都找不到' },
+          buildTagPart('card', darkness),
+          { text: ', 饮恨败北...', tone: 'red' },
+        ]
+        : [
+          { text: `You picked up ` },
+          buildTagPart('card', quadcast),
+          { text: ` on floor ${quadcastGain.floor}, but never found ` },
+          buildTagPart('card', darkness),
+          { text: '. The run ended in defeat...', tone: 'red' },
+        ],
+    });
+  }
+  if (quadcastGain && darknessGain && run.win) {
+    const quadcast = resolveCardLabel(codex, { id: 'CARD.QUADCAST' });
+    moments.push({
+      id: 'quadcast-darkness',
+      parts: locale === 'zh'
+        ? [
+          { text: `你在第 ${quadcastGain.floor} 层拿到了` },
+          buildTagPart('card', quadcast),
+          { text: ', 你用它释放你的黑球, 轻松赢下这局. 你觉得这个游戏还是太简单了...' },
+        ]
+        : [
+          { text: `You picked up ` },
+          buildTagPart('card', quadcast),
+          { text: ` on floor ${quadcastGain.floor}, unleashed your Dark orbs with it, and coasted to a win. The game felt a little too easy...` },
+        ],
+    });
+  }
+  const sealedThroneGain = cardTimeline.find(item => item.id === 'THE_SEALED_THRONE');
+  if (sealedThroneGain && run.win) {
+    const sealedThrone = resolveCardLabel(codex, { id: 'CARD.THE_SEALED_THRONE' });
+    moments.push({
+      id: 'sealed-throne',
+      parts: locale === 'zh'
+        ? [
+          { text: `你在第 ${sealedThroneGain.floor} 层拿到了` },
+          buildTagPart('card', sealedThrone),
+          { text: ', 你感觉到源源不断的星辉在汇集. 你只是随便打牌就赢下了这局.' },
+        ]
+        : [
+          { text: `You found ` },
+          buildTagPart('card', sealedThrone),
+          { text: ` on floor ${sealedThroneGain.floor}. Stars kept gathering around you, and the run ended up winning itself.` },
+        ],
+    });
+  }
+  const skippedBossFloor = Array.from(new Set(analysis.bossRewardNodes.map(node => node.floor)))
+    .filter(floor => {
+      const nodes = analysis.bossRewardNodes.filter(node => node.floor === floor);
+      return nodes.length && nodes.every(node => safeArray(node.stats?.card_choices).length && safeArray(node.stats.card_choices).every(choice => !choice?.was_picked));
+    })
+    .sort((left, right) => right - left)[0];
+  if (skippedBossFloor) {
+    const regret = resolveCardLabel(codex, { id: 'CARD.REGRET' });
+    moments.push({
+      id: 'boss-skip',
+      parts: locale === 'zh'
+        ? [
+          { text: `你在第 ${skippedBossFloor} 层跳过了 Boss 的稀有卡牌奖励` },
+          ...(run.win
+            ? [{ text: '. 真是个有' }, { text: '独特理解', tone: 'gold' }, { text: '的家伙!' }]
+            : [{ text: ', 然后玩脱了. 你感到' }, buildTagPart('card', regret), { text: '...' }]),
+        ]
+        : [
+          { text: `On floor ${skippedBossFloor}, you skipped every rare boss card reward` },
+          ...(run.win
+            ? [{ text: '. That is certainly ' }, { text: 'a unique line', tone: 'gold' }, { text: ' to take.' }]
+            : [{ text: ', then everything unraveled. You were left with ' }, buildTagPart('card', regret), { text: '.' }]),
+        ],
+    });
+  }
+  const bossCount = analysis.nodes.filter(node => node.roomType === 'boss').length;
+  if (!analysis.actEliteCounts.some(count => count > 0) && bossCount >= 2) {
+    const badLuck = resolveCardLabel(codex, { id: 'CARD.BAD_LUCK' });
+    moments.push({
+      id: 'no-elites',
+      parts: locale === 'zh'
+        ? [
+          { text: '你躲避了全部精英, 来到了高塔深处, ' },
+          ...(run.win
+            ? [{ text: '然后以' }, { text: '精妙', tone: 'gold' }, { text: '的战术取得了' }, { text: '胜利', tone: 'green' }, { text: '.' }]
+            : [{ text: '然后被踹回了塔底. 你觉得这一定是' }, buildTagPart('card', badLuck), { text: ', 下次还要躲避精英才行.' }]),
+        ]
+        : [
+          { text: 'You dodged every elite and still pushed deep into the Spire, ' },
+          ...(run.win
+            ? [{ text: 'then closed it out with ' }, { text: 'precision', tone: 'gold' }, { text: ' and ' }, { text: 'victory', tone: 'green' }, { text: '.' }]
+            : [{ text: 'only to get kicked back down the tower. Surely it was ' }, buildTagPart('card', badLuck), { text: ', so skipping elites again must be right.' }]),
+        ],
+    });
+  }
+  return moments;
 }
 
 export async function buildReportFromRun(run, options = {}) {
@@ -435,6 +810,7 @@ export async function buildReportFromRun(run, options = {}) {
     relics: safeArray(analysis.player.relics).length,
     goldSpent: analysis.goldSpent,
     cardRewards: analysis.actCardRewardCounts.reduce((sum, value) => sum + value, 0),
+    removedCards: analysis.actRemovedCounts.reduce((sum, value) => sum + value, 0),
     restSites: analysis.restSites,
     restCount: analysis.restCount,
     smithCount: analysis.smithCount,
@@ -447,6 +823,7 @@ export async function buildReportFromRun(run, options = {}) {
     run.build_id || t(locale, 'unknown'),
     `${t(locale, 'seedShort')} ${run.seed || t(locale, 'unknown')}`,
   ].join(' · ');
+  const moments = buildMoments(codex, analysis, run, locale);
 
   return {
     locale,
@@ -469,7 +846,7 @@ export async function buildReportFromRun(run, options = {}) {
     warnings,
     heroStats: [
       {
-        icon: '❤️',
+        icon: '💗',
         label: t(locale, 'finalHp'),
         value: finalHpPoint ? `${finalHpPoint.current}/${finalHpPoint.max}` : t(locale, 'unknown'),
         detail: analysis.lowestHpPoint ? `${t(locale, 'lowestHp')} ${analysis.lowestHpPoint.current}/${analysis.lowestHpPoint.max} · ${t(locale, 'floor')} ${analysis.lowestHpPoint.floor}` : '',
@@ -478,7 +855,7 @@ export async function buildReportFromRun(run, options = {}) {
         icon: '🃏',
         label: t(locale, 'finalDeck'),
         value: String(pathStats.finalDeck),
-        detail: `${t(locale, 'chosenCards')}: ${formatCountByAct(locale, analysis.actCardRewardCounts, actNames)}`,
+        detail: `${t(locale, 'chosenCards')}: ${formatCountByAct(locale, analysis.actCardRewardCounts, actNames)} / ${t(locale, 'removedCards')} ${pathStats.removedCards}`,
       },
       {
         icon: '🔥',
@@ -529,6 +906,9 @@ export async function buildReportFromRun(run, options = {}) {
     bossRewardsTitle: t(locale, 'bossRewards'),
     bossRewardsEmpty: t(locale, 'noBossRewards'),
     bossRewards: analysis.bossRewardNodes.map(node => buildRewardLabel(codex, node, actNames[node.actIndex] || `Act ${node.actIndex + 1}`, locale)),
+    momentsTitle: t(locale, 'moments'),
+    momentsEmpty: t(locale, 'noMoments'),
+    moments,
     allCardPicksTitle: t(locale, 'allCardPicks'),
     allCardPicksEmpty: t(locale, 'noCardPicks'),
     allCardPicks: buildAllCardPicks(codex, analysis, actNames),
@@ -563,9 +943,11 @@ export async function buildReportFromRun(run, options = {}) {
       actNames,
       otherRestCount: analysis.otherRestCount,
       actCardRewardCounts: analysis.actCardRewardCounts,
+      actRemovedCounts: analysis.actRemovedCounts,
       actEliteCounts: analysis.actEliteCounts,
       goldSpent: pathStats.goldSpent,
       cardRewards: pathStats.cardRewards,
+      removedCards: pathStats.removedCards,
     },
   };
 }

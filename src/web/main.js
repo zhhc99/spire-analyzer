@@ -1,9 +1,10 @@
 import { buildReportFromRun, listPlayers, parseRunText } from '../core/report.js';
-import { detectLocale, resolveLocale, t } from '../core/i18n.js';
+import { detectLocale, formatDuration, formatStartTime, getResultLabel, resolveLocale, t } from '../core/i18n.js';
 import { renderApp } from './render.js';
 
 const app = document.getElementById('app');
 const fileInput = document.getElementById('fileInput');
+const directoryInput = document.getElementById('directoryInput');
 const preloadThemes = ['ironclad', 'silent', 'defect', 'necrobinder', 'regent'];
 
 const state = {
@@ -21,6 +22,11 @@ const state = {
   preloadTheme: preloadThemes[Math.floor(Math.random() * preloadThemes.length)],
   selectedFloor: null,
   floorMenuOpen: false,
+  runEntries: [],
+  activeRunId: '',
+  sourceSupported: false,
+  canChooseDirectory: false,
+  canDropDirectory: false,
 };
 
 let dragDepth = 0;
@@ -33,7 +39,14 @@ function detectPlatformPath() {
   return t(state.locale, 'sourceHintLinux').replace(/^Linux \/ Steam Deck:\s*/i, '');
 }
 
+function detectSourceSupport() {
+  state.canChooseDirectory = typeof window.showDirectoryPicker === 'function' || 'webkitdirectory' in directoryInput;
+  state.canDropDirectory = typeof DataTransferItem !== 'undefined' && typeof DataTransferItem.prototype?.getAsFileSystemHandle === 'function';
+  state.sourceSupported = state.canChooseDirectory || state.canDropDirectory;
+}
+
 function syncText() {
+  detectSourceSupport();
   state.text = {
     changeFile: t(state.locale, 'changeFile'),
     loadFailed: t(state.locale, 'loadFailed'),
@@ -42,6 +55,14 @@ function syncText() {
     copied: t(state.locale, 'copied'),
     uploadCta: t(state.locale, 'uploadCta'),
     uploadDropCta: t(state.locale, 'uploadDropCta'),
+    chooseDirectory: t(state.locale, 'chooseDirectory'),
+    chooseRunFile: t(state.locale, 'chooseRunFile'),
+    scanResults: t(state.locale, 'scanResults'),
+    runListTitle: t(state.locale, 'runListTitle'),
+    sourceHint: t(state.locale, state.sourceSupported ? 'sourceSupported' : 'sourceUnsupported'),
+    scanFailed: t(state.locale, 'scanFailed'),
+    openRunList: t(state.locale, 'openRunList'),
+    noSupportedDrop: t(state.locale, 'noSupportedDrop'),
     floorShort: t(state.locale, 'floorShort'),
     loading: t(state.locale, 'loading'),
     previousFloor: t(state.locale, 'previousFloor'),
@@ -74,6 +95,38 @@ async function copyHistoryPath() {
   } catch {
     state.copyMessage = '';
   }
+}
+
+function toPrettyFallback(value) {
+  const raw = String(value || '').replace(/^[A-Z_]+\./, '').toUpperCase();
+  if (!raw) return '';
+  return raw
+    .toLowerCase()
+    .split('_')
+    .filter(Boolean)
+    .map(part => part[0].toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function localizeRunEntry(entry) {
+  const players = listPlayers(entry.run);
+  const lead = toPrettyFallback(players[0]?.character);
+  const extraPlayers = players.length > 1 ? ` +${players.length - 1}` : '';
+  return {
+    ...entry,
+    title: `${lead || entry.name}${extraPlayers}`,
+    resultLabel: getResultLabel(state.locale, entry.run),
+    resultTone: entry.run.was_abandoned ? 'muted' : entry.run.win ? 'success' : 'danger',
+    metaLine: [
+      formatDuration(entry.run.run_time || 0, state.locale),
+      formatStartTime(entry.run.start_time || 0, state.locale),
+      entry.run.build_id || t(state.locale, 'unknown'),
+    ].join(' · '),
+  };
+}
+
+function refreshRunEntriesLocale() {
+  state.runEntries = state.runEntries.map(localizeRunEntry);
 }
 
 function bindChartInteractions() {
@@ -122,7 +175,7 @@ function bindChartInteractions() {
       const body = chart.id === 'hp'
         ? `
           <div class="tooltip-value">
-            ❤️
+            💗
             <span class="tooltip-current" style="color:${nearestSeries[1]?.color || '#ffd180'}">${nearestSeries[1]?.point?.y ?? ''}</span>
             <span class="tooltip-slash">/</span>
             <span class="tooltip-max" style="color:${nearestSeries[0]?.color || '#ff8a80'}">${nearestSeries[0]?.point?.y ?? ''}</span>
@@ -203,19 +256,118 @@ async function rebuildReport() {
   }
 }
 
-async function loadFile(file) {
-  if (!file) return;
+async function selectRunEntry(entryId) {
+  const entry = state.runEntries.find(item => item.id === entryId);
+  if (!entry) return;
+  state.activeRunId = entry.id;
+  state.run = entry.run;
+  state.fileName = entry.pathLabel;
+  state.playerId = listPlayers(entry.run)[0]?.id || null;
+  await rebuildReport();
+}
+
+function isRunFileName(name) {
+  return /\.(run|json)$/i.test(String(name || ''));
+}
+
+async function collectRunFilesFromHandle(handle, prefix = '') {
+  if (handle.kind === 'file') {
+    if (!isRunFileName(handle.name)) return [];
+    return [{ file: await handle.getFile(), pathLabel: prefix || handle.name }];
+  }
+  const files = [];
+  for await (const [name, child] of handle.entries()) {
+    const nextPrefix = prefix ? `${prefix}/${name}` : name;
+    files.push(...await collectRunFilesFromHandle(child, nextPrefix));
+  }
+  return files;
+}
+
+function collectRunFilesFromInput(files) {
+  return Array.from(files || [])
+    .filter(file => isRunFileName(file.name))
+    .map(file => ({
+      file,
+      pathLabel: file.webkitRelativePath || file.name,
+    }));
+}
+
+async function collectRunFilesFromDrop(event) {
+  const items = Array.from(event.dataTransfer?.items || []);
+  if (state.canDropDirectory && items.length) {
+    const descriptors = [];
+    for (const item of items) {
+      if (item.kind !== 'file') continue;
+      const handle = await item.getAsFileSystemHandle();
+      if (!handle) continue;
+      descriptors.push(...await collectRunFilesFromHandle(handle, handle.name));
+    }
+    if (descriptors.length) return descriptors;
+  }
+  return collectRunFilesFromInput(event.dataTransfer?.files);
+}
+
+async function buildRunEntries(descriptors) {
+  const parsed = [];
+  for (const descriptor of descriptors) {
+    try {
+      const text = await descriptor.file.text();
+      const run = parseRunText(text);
+      parsed.push(localizeRunEntry({
+        id: `${descriptor.pathLabel}:${descriptor.file.size}:${descriptor.file.lastModified}`,
+        name: descriptor.file.name,
+        pathLabel: descriptor.pathLabel,
+        run,
+      }));
+    } catch {}
+  }
+  return parsed.sort((left, right) => (right.run.start_time || 0) - (left.run.start_time || 0));
+}
+
+async function loadDescriptors(descriptors, errorKey = 'loadFailed') {
+  state.loading = true;
+  state.error = '';
+  state.report = null;
+  state.run = null;
+  state.fileName = '';
+  state.playerId = null;
+  state.activeRunId = '';
+  render();
   try {
-    const text = await file.text();
-    state.run = parseRunText(text);
-    state.fileName = file.name;
-    state.playerId = listPlayers(state.run)[0]?.id || null;
-    state.error = '';
-    await rebuildReport();
+    const entries = await buildRunEntries(descriptors);
+    if (!entries.length) throw new Error(state.text.noSupportedDrop);
+    state.runEntries = entries;
   } catch (error) {
-    state.run = null;
-    state.report = null;
-    state.error = `${state.text.loadFailed}: ${error.message || String(error)}`;
+    state.runEntries = [];
+    state.error = `${state.text[errorKey] || state.text.loadFailed}: ${error.message || String(error)}`;
+  } finally {
+    state.loading = false;
+    render();
+  }
+}
+
+async function loadFileList(files) {
+  const descriptors = collectRunFilesFromInput(files);
+  await loadDescriptors(descriptors, 'loadFailed');
+}
+
+async function chooseDirectory() {
+  try {
+    if (typeof window.showDirectoryPicker === 'function') {
+      const handle = await window.showDirectoryPicker();
+      const descriptors = await collectRunFilesFromHandle(handle, handle.name);
+      await loadDescriptors(descriptors, 'scanFailed');
+      return;
+    }
+    if ('webkitdirectory' in directoryInput) {
+      directoryInput.click();
+      return;
+    }
+    state.error = state.text.sourceUnsupported;
+    render();
+  } catch (error) {
+    if (error?.name === 'AbortError') return;
+    state.error = `${state.text.scanFailed}: ${error.message || String(error)}`;
     render();
   }
 }
@@ -231,8 +383,12 @@ app.addEventListener('click', async event => {
     render();
     return;
   }
-  const target = event.target.closest('[data-action],[data-locale],[data-player],[data-copy-path],[data-floor-menu-toggle],[data-floor-option],[data-floor-step]');
+  const target = event.target.closest('[data-action],[data-locale],[data-player],[data-copy-path],[data-floor-menu-toggle],[data-floor-option],[data-floor-step],[data-run-entry]');
   if (!target) return;
+  if (target.dataset.runEntry) {
+    await selectRunEntry(target.dataset.runEntry);
+    return;
+  }
   if (target.dataset.floorMenuToggle != null) {
     state.floorMenuOpen = !state.floorMenuOpen;
     render();
@@ -256,8 +412,25 @@ app.addEventListener('click', async event => {
     render();
     return;
   }
+  if (target.dataset.action === 'choose-source') {
+    if (state.canChooseDirectory) await chooseDirectory();
+    else fileInput.click();
+    return;
+  }
+  if (target.dataset.action === 'choose-directory') {
+    await chooseDirectory();
+    return;
+  }
   if (target.dataset.action === 'choose-file') {
     fileInput.click();
+    return;
+  }
+  if (target.dataset.action === 'show-runs') {
+    state.report = null;
+    state.run = null;
+    state.playerId = null;
+    state.floorMenuOpen = false;
+    render();
     return;
   }
   if (target.dataset.copyPath != null) {
@@ -266,7 +439,9 @@ app.addEventListener('click', async event => {
   }
   if (target.dataset.locale) {
     state.locale = resolveLocale(target.dataset.locale);
-    await rebuildReport();
+    refreshRunEntriesLocale();
+    if (state.run) await rebuildReport();
+    else render();
     return;
   }
   if (target.dataset.player) {
@@ -276,9 +451,13 @@ app.addEventListener('click', async event => {
 });
 
 fileInput.addEventListener('change', async event => {
-  const file = event.target.files?.[0];
-  await loadFile(file);
+  await loadFileList(event.target.files);
   fileInput.value = '';
+});
+
+directoryInput.addEventListener('change', async event => {
+  await loadFileList(event.target.files);
+  directoryInput.value = '';
 });
 
 document.addEventListener('dragenter', event => {
@@ -301,13 +480,18 @@ document.addEventListener('dragleave', event => {
   if (dragDepth === 0) setDragActive(false);
 });
 
-document.addEventListener('drop', event => {
+document.addEventListener('drop', async event => {
   if (!hasFileDrag(event)) return;
   event.preventDefault();
   dragDepth = 0;
   setDragActive(false);
-  const file = event.dataTransfer?.files?.[0];
-  void loadFile(file);
+  const descriptors = await collectRunFilesFromDrop(event);
+  if (!descriptors.length) {
+    state.error = state.text.noSupportedDrop;
+    render();
+    return;
+  }
+  await loadDescriptors(descriptors, 'scanFailed');
 });
 
 render();
