@@ -27,6 +27,9 @@ const state = {
   sourceSupported: false,
   canChooseDirectory: false,
   canDropDirectory: false,
+  sourceKind: '',
+  directoryHandle: null,
+  directoryFiles: null,
 };
 
 let dragDepth = 0;
@@ -59,6 +62,7 @@ function syncText() {
     chooseRunFile: t(state.locale, 'chooseRunFile'),
     scanResults: t(state.locale, 'scanResults'),
     runListTitle: t(state.locale, 'runListTitle'),
+    refreshDirectory: t(state.locale, 'refreshDirectory'),
     sourceHint: t(state.locale, state.sourceSupported ? 'sourceSupported' : 'sourceUnsupported'),
     scanFailed: t(state.locale, 'scanFailed'),
     openRunList: t(state.locale, 'openRunList'),
@@ -292,19 +296,41 @@ function collectRunFilesFromInput(files) {
     }));
 }
 
+async function refreshDirectoryEntries() {
+  if (state.directoryHandle) {
+    const descriptors = await collectRunFilesFromHandle(state.directoryHandle, state.directoryHandle.name);
+    await loadDescriptors(descriptors, 'scanFailed', { sourceKind: 'directory', directoryHandle: state.directoryHandle, directoryFiles: null });
+    return true;
+  }
+  if (state.directoryFiles) {
+    const descriptors = collectRunFilesFromInput(state.directoryFiles);
+    await loadDescriptors(descriptors, 'scanFailed', { sourceKind: 'directory', directoryHandle: null, directoryFiles: state.directoryFiles });
+    return true;
+  }
+  return false;
+}
+
 async function collectRunFilesFromDrop(event) {
   const items = Array.from(event.dataTransfer?.items || []);
   if (state.canDropDirectory && items.length) {
     const descriptors = [];
+    let directoryHandle = null;
     for (const item of items) {
       if (item.kind !== 'file') continue;
       const handle = await item.getAsFileSystemHandle();
       if (!handle) continue;
+      if (!directoryHandle && handle.kind === 'directory') directoryHandle = handle;
       descriptors.push(...await collectRunFilesFromHandle(handle, handle.name));
     }
-    if (descriptors.length) return descriptors;
+    if (descriptors.length) return { descriptors, sourceKind: directoryHandle ? 'directory' : 'file', directoryHandle, directoryFiles: null };
   }
-  return collectRunFilesFromInput(event.dataTransfer?.files);
+  const files = event.dataTransfer?.files;
+  return {
+    descriptors: collectRunFilesFromInput(files),
+    sourceKind: 'file',
+    directoryHandle: null,
+    directoryFiles: null,
+  };
 }
 
 async function buildRunEntries(descriptors) {
@@ -324,7 +350,7 @@ async function buildRunEntries(descriptors) {
   return parsed.sort((left, right) => (right.run.start_time || 0) - (left.run.start_time || 0));
 }
 
-async function loadDescriptors(descriptors, errorKey = 'loadFailed') {
+async function loadDescriptors(descriptors, errorKey = 'loadFailed', source = {}) {
   state.loading = true;
   state.error = '';
   state.report = null;
@@ -332,6 +358,9 @@ async function loadDescriptors(descriptors, errorKey = 'loadFailed') {
   state.fileName = '';
   state.playerId = null;
   state.activeRunId = '';
+  state.sourceKind = source.sourceKind || '';
+  state.directoryHandle = source.directoryHandle || null;
+  state.directoryFiles = source.directoryFiles || null;
   render();
   try {
     const entries = await buildRunEntries(descriptors);
@@ -348,7 +377,7 @@ async function loadDescriptors(descriptors, errorKey = 'loadFailed') {
 
 async function loadFileList(files) {
   const descriptors = collectRunFilesFromInput(files);
-  await loadDescriptors(descriptors, 'loadFailed');
+  await loadDescriptors(descriptors, 'loadFailed', { sourceKind: 'file', directoryHandle: null, directoryFiles: null });
 }
 
 async function chooseDirectory() {
@@ -356,7 +385,7 @@ async function chooseDirectory() {
     if (typeof window.showDirectoryPicker === 'function') {
       const handle = await window.showDirectoryPicker();
       const descriptors = await collectRunFilesFromHandle(handle, handle.name);
-      await loadDescriptors(descriptors, 'scanFailed');
+      await loadDescriptors(descriptors, 'scanFailed', { sourceKind: 'directory', directoryHandle: handle, directoryFiles: null });
       return;
     }
     if ('webkitdirectory' in directoryInput) {
@@ -426,11 +455,19 @@ app.addEventListener('click', async event => {
     return;
   }
   if (target.dataset.action === 'show-runs') {
+    if (state.sourceKind === 'directory') {
+      await refreshDirectoryEntries();
+      return;
+    }
     state.report = null;
     state.run = null;
     state.playerId = null;
     state.floorMenuOpen = false;
     render();
+    return;
+  }
+  if (target.dataset.action === 'refresh-directory') {
+    if (state.sourceKind === 'directory') await refreshDirectoryEntries();
     return;
   }
   if (target.dataset.copyPath != null) {
@@ -456,7 +493,12 @@ fileInput.addEventListener('change', async event => {
 });
 
 directoryInput.addEventListener('change', async event => {
-  await loadFileList(event.target.files);
+  state.directoryFiles = event.target.files;
+  await loadDescriptors(collectRunFilesFromInput(event.target.files), 'scanFailed', {
+    sourceKind: 'directory',
+    directoryHandle: null,
+    directoryFiles: event.target.files,
+  });
   directoryInput.value = '';
 });
 
@@ -485,13 +527,13 @@ document.addEventListener('drop', async event => {
   event.preventDefault();
   dragDepth = 0;
   setDragActive(false);
-  const descriptors = await collectRunFilesFromDrop(event);
-  if (!descriptors.length) {
+  const dropped = await collectRunFilesFromDrop(event);
+  if (!dropped.descriptors.length) {
     state.error = state.text.noSupportedDrop;
     render();
     return;
   }
-  await loadDescriptors(descriptors, 'scanFailed');
+  await loadDescriptors(dropped.descriptors, 'scanFailed', dropped);
 });
 
 render();

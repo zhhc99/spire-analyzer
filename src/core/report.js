@@ -652,6 +652,18 @@ function buildMoments(codex, analysis, run, locale) {
         ],
     });
   }
+  if (run.win && analysis.restCount === 0) {
+    moments.push({
+      id: 'no-rest-win',
+      parts: locale === 'zh'
+        ? [
+          { text: '你一觉都没有睡过, 一口气爬上了塔顶, 建筑师惊呆了.' },
+        ]
+        : [
+          { text: 'You never rested once, climbed all the way to the top in one go, and left The Architect stunned.' },
+        ],
+    });
+  }
   const finalRelicIds = safeArray(analysis.player.relics).map(item => stripPrefix(item?.id || item));
   if (['LANTERN', 'CANDELABRA', 'CHANDELIER'].every(id => finalRelicIds.includes(id))) {
     const lantern = resolveRelicLabel(codex, 'RELIC.LANTERN');
@@ -681,6 +693,19 @@ function buildMoments(codex, analysis, run, locale) {
           { text: '. Suddenly, everything felt ' },
           { text: 'bright', tone: 'gold' },
           { text: '.' },
+        ],
+    });
+  }
+  const act3Bosses = analysis.nodes.filter(node => node.actIndex === 2 && node.roomType === 'boss');
+  if (act3Bosses.length === 2 && act3Bosses.every(node => Number(node.stats?.damage_taken || 0) === 0)) {
+    moments.push({
+      id: 'perfect-act3-bosses',
+      parts: locale === 'zh'
+        ? [
+          { text: '真是一场大胜! 最后的 2 个 Boss 都不能伤到你分毫.' },
+        ]
+        : [
+          { text: 'What a finish. The final 2 bosses could not lay a finger on you.' },
         ],
     });
   }
@@ -740,6 +765,23 @@ function buildMoments(codex, analysis, run, locale) {
           { text: `You found ` },
           buildTagPart('card', sealedThrone),
           { text: ` on floor ${sealedThroneGain.floor}. Stars kept gathering around you, and the run ended up winning itself.` },
+        ],
+    });
+  }
+  const finalGold = Number(analysis.nodes[analysis.nodes.length - 1]?.stats?.current_gold || 0);
+  if (finalGold > 1000) {
+    moments.push({
+      id: 'gold-hoard',
+      parts: locale === 'zh'
+        ? [
+          { text: '你带着 ' },
+          { text: `${finalGold} 金币`, tone: 'gold' },
+          { text: ' 回到了塔底. 不论输赢, 你至少赚了.' },
+        ]
+        : [
+          { text: 'You came back down the Spire with ' },
+          { text: `${finalGold} gold`, tone: 'gold' },
+          { text: '. Win or lose, at least you made a profit.' },
         ],
     });
   }

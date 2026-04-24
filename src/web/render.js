@@ -106,6 +106,13 @@ function renderMoment(moment) {
 }
 
 function renderIcon(name) {
+  if (name === 'refresh') {
+    return `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v6h-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    `;
+  }
   if (name === 'list') {
     return `
       <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -248,6 +255,7 @@ export function renderApp(state) {
               </div>
               <div class="topbar-actions">
                 ${renderLocaleButton(state)}
+                ${state.sourceKind === 'directory' ? `<button class="icon-btn icon-btn-accent" type="button" data-action="refresh-directory" title="${escapeHtml(state.text.refreshDirectory)}" aria-label="${escapeHtml(state.text.refreshDirectory)}">${renderIcon('refresh')}</button>` : ''}
                 ${state.canChooseDirectory ? `<button class="icon-btn" type="button" data-action="choose-directory" title="${escapeHtml(state.text.chooseDirectory)}" aria-label="${escapeHtml(state.text.chooseDirectory)}">${renderIcon('folder')}</button>` : ''}
                 <button class="icon-btn" type="button" data-action="choose-file" title="${escapeHtml(state.text.changeFile)}" aria-label="${escapeHtml(state.text.changeFile)}">${renderIcon('upload')}</button>
               </div>
