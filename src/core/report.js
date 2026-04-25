@@ -492,6 +492,7 @@ function buildTagPart(kind, entity) {
 
 function buildMoments(codex, analysis, run, locale) {
   const moments = [];
+  const actNames = buildActNames(codex, safeArray(run.acts));
   const relicTimeline = analysis.nodes.flatMap(node => buildRelicGainItems(codex, node).map(item => ({ ...item, floor: node.floor })));
   const cardTimeline = analysis.nodes.flatMap(node => buildCardActivityItems(codex, node)
     .filter(item => item.state === 'picked')
@@ -576,13 +577,30 @@ function buildMoments(codex, analysis, run, locale) {
         ],
     });
   }
+  const totalPickedCardRewards = analysis.nodes.reduce((sum, node) => sum + safeArray(node.stats?.card_choices).filter(choice => choice?.was_picked && choice.card?.id).length, 0);
+  if (totalPickedCardRewards > 50) {
+    moments.push({
+      id: 'many-card-rewards',
+      parts: locale === 'zh'
+        ? [
+          { text: '你一路上抓取了 ' },
+          { text: `${totalPickedCardRewards} 张卡牌`, tone: 'gold' },
+          { text: '! 一定有什么奇怪的东西让你不得不这么做...' },
+        ]
+        : [
+          { text: 'You picked up ' },
+          { text: `${totalPickedCardRewards} cards`, tone: 'gold' },
+          { text: ' from rewards along the way. Something strange must have made you do it...' },
+        ],
+    });
+  }
   const finalDeckIds = safeArray(analysis.player.deck).map(card => stripPrefix(card?.id || card));
   if (['SPLASH', 'DISCOVERY', 'JACKPOT'].every(id => finalDeckIds.includes(id))) {
     const splash = resolveCardLabel(codex, { id: 'CARD.SPLASH' });
     const discovery = resolveCardLabel(codex, { id: 'CARD.DISCOVERY' });
     const jackpot = resolveCardLabel(codex, { id: 'CARD.JACKPOT' });
     moments.push({
-      id: 'colorless-trio',
+      id: 'random-trio',
       parts: locale === 'zh'
         ? [
           { text: '你居然集齐了' },
@@ -591,7 +609,7 @@ function buildMoments(codex, analysis, run, locale) {
           buildTagPart('card', discovery),
           { text: ' 和 ' },
           buildTagPart('card', jackpot),
-          { text: '! 这简直是人生的享受.' },
+          { text: '! 你的每场战斗都充满了有趣的未知.' },
         ]
         : [
           { text: 'You somehow assembled ' },
@@ -600,7 +618,7 @@ function buildMoments(codex, analysis, run, locale) {
           buildTagPart('card', discovery),
           { text: ', and ' },
           buildTagPart('card', jackpot),
-          { text: '. That is pure luxury.' },
+          { text: '. Every fight became a delightfully unpredictable mess.' },
         ],
     });
   }
@@ -637,10 +655,9 @@ function buildMoments(codex, analysis, run, locale) {
         ? [
           { text: `你在第 ${runicPyramidGain.floor} 层拿到了` },
           buildTagPart('relic', runicPyramid),
-          { text: ', 这无异于打开了官方外挂' },
           ...(run.win
-            ? [{ text: '.' }]
-            : [{ text: '...但你居然没能走到最后!?', tone: 'red' }]),
+            ? [{ text: ', 你感受到一股不属于这个游戏的力量带领你走向胜利.' }]
+            : [{ text: ', 这无异于打开了官方外挂' }, { text: '...但你居然没能走到最后!?', tone: 'red' }]),
         ]
         : [
           { text: `You found ` },
@@ -649,6 +666,33 @@ function buildMoments(codex, analysis, run, locale) {
           ...(run.win
             ? [{ text: '.' }]
             : [{ text: '...and you still did not make it to the end!?', tone: 'red' }]),
+        ],
+    });
+  }
+  const flawlessActCombat = analysis.nodes
+    .reduce((acts, node) => {
+      if (!COMBAT_ROOM_TYPES.has(node.roomType)) return acts;
+      const entry = acts[node.actIndex] || { actIndex: node.actIndex, count: 0, flawless: true };
+      entry.count += 1;
+      if (Number(node.stats?.damage_taken || 0) > 0) entry.flawless = false;
+      acts[node.actIndex] = entry;
+      return acts;
+    }, [])
+    .filter(act => act?.count >= 3 && act.flawless)
+    .sort((left, right) => right.actIndex - left.actIndex)[0];
+  if (flawlessActCombat) {
+    moments.push({
+      id: 'flawless-act-combat',
+      parts: locale === 'zh'
+        ? [
+          { text: '你在' },
+          buildTagPart('act', { label: actNames[flawlessActCombat.actIndex], imageUrl: null }),
+          { text: `进行了${flawlessActCombat.count}场战斗. 那些怪物的攻击凶猛, 却连你的皮毛都触碰不到.` },
+        ]
+        : [
+          { text: 'In ' },
+          buildTagPart('act', { label: actNames[flawlessActCombat.actIndex], imageUrl: null }),
+          { text: `, you fought ${flawlessActCombat.count} battles. The monsters came at you fiercely, but could not even lay a scratch on you.` },
         ],
     });
   }
@@ -664,7 +708,31 @@ function buildMoments(codex, analysis, run, locale) {
           { text: '了.' },
         ]
         : [
-          { text: 'You never rested once, climbed all the way to the top in one go, and left The Architect stunned.' },
+          { text: 'Unlike most climbers, you never rested at all and charged straight to the top. The Architect was left utterly stunned.' },
+        ],
+    });
+  }
+  const lastBossNode = run.win
+    ? analysis.nodes
+      .filter(node => node.roomType === 'boss')
+      .sort((left, right) => right.floor - left.floor)[0]
+    : null;
+  const enteredLastBossHp = lastBossNode
+    ? Number(analysis.nodes.find(node => node.floor === lastBossNode.floor - 1)?.stats?.current_hp || 0)
+    : 0;
+  if (lastBossNode && enteredLastBossHp > 0 && enteredLastBossHp < 5) {
+    moments.push({
+      id: 'last-boss-last-stand',
+      parts: locale === 'zh'
+        ? [
+          { text: `第 ${lastBossNode.floor} 层, 你拖着残破之躯面对强大的 ` },
+          buildTagPart('encounter', { label: resolveEncounterLabel(codex, lastBossNode.modelId), imageUrl: null }),
+          { text: '. 但你没有放弃!' },
+        ]
+        : [
+          { text: `On floor ${lastBossNode.floor}, you dragged your broken body into the final fight against ` },
+          buildTagPart('encounter', { label: resolveEncounterLabel(codex, lastBossNode.modelId), imageUrl: null }),
+          { text: '. But you did not give up!' },
         ],
     });
   }
@@ -712,7 +780,10 @@ function buildMoments(codex, analysis, run, locale) {
           { text: '你是怎么做到的?!', tone: 'red-italic' },
         ]
         : [
-          { text: 'What a finish. The final 2 bosses could not lay a finger on you.' },
+          { text: 'What a finish. The final pair of bosses dealt ' },
+          { text: '0', tone: 'red' },
+          { text: ' damage to you. ' },
+          { text: 'How did you even do that?!', tone: 'red-italic' },
         ],
     });
   }
@@ -753,7 +824,7 @@ function buildMoments(codex, analysis, run, locale) {
         : [
           { text: `You picked up ` },
           buildTagPart('card', quadcast),
-          { text: ` on floor ${quadcastGain.floor}, unleashed your Dark orbs with it, and coasted to a win. The game felt a little too easy...` },
+          { text: ` on floor ${quadcastGain.floor}, used it to evoke your Dark orbs, and coasted to a win. The game felt a little too easy...` },
         ],
     });
   }

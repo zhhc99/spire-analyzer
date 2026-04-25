@@ -91,16 +91,9 @@ function renderCompactRelic(item, locale) {
 function renderMoment(moment) {
   return `
     <article class="moment-item">
-      ${moment.parts.map(part => `
-        ${part.tone === 'tag'
-          ? `
-            <span class="moment-part tone-tag">
-              ${part.imageUrl ? `<img src="${escapeHtml(part.imageUrl)}" alt="">` : ''}
-              <span class="entity-label${part.rarity ? ` rarity-${part.rarity}` : ''}">${escapeHtml(part.text)}</span>
-            </span>
-          `
-          : `<span class="moment-part${part.tone ? ` tone-${part.tone}` : ''}">${escapeHtml(part.text)}</span>`}
-      `).join('')}
+      ${moment.parts.map(part => (part.tone === 'tag'
+        ? `<span class="moment-part tone-tag">${part.imageUrl ? `<img src="${escapeHtml(part.imageUrl)}" alt="">` : ''}<span class="entity-label${part.rarity ? ` rarity-${part.rarity}` : ''}">${escapeHtml(part.text)}</span></span>`
+        : `<span class="moment-part${part.tone ? ` tone-${part.tone}` : ''}">${escapeHtml(part.text)}</span>`)).join('')}
     </article>
   `;
 }
