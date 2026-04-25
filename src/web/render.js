@@ -248,9 +248,9 @@ export function renderApp(state) {
               </div>
               <div class="topbar-actions">
                 ${renderLocaleButton(state)}
-                ${state.sourceKind === 'directory' ? `<button class="icon-btn icon-btn-accent" type="button" data-action="refresh-directory" title="${escapeHtml(state.text.refreshDirectory)}" aria-label="${escapeHtml(state.text.refreshDirectory)}">${renderIcon('refresh')}</button>` : ''}
                 ${state.canChooseDirectory ? `<button class="icon-btn" type="button" data-action="choose-directory" title="${escapeHtml(state.text.chooseDirectory)}" aria-label="${escapeHtml(state.text.chooseDirectory)}">${renderIcon('folder')}</button>` : ''}
                 <button class="icon-btn" type="button" data-action="choose-file" title="${escapeHtml(state.text.changeFile)}" aria-label="${escapeHtml(state.text.changeFile)}">${renderIcon('upload')}</button>
+                ${state.sourceKind === 'directory' ? `<button class="icon-btn icon-btn-accent" type="button" data-action="refresh-directory" title="${escapeHtml(state.text.refreshDirectory)}" aria-label="${escapeHtml(state.text.refreshDirectory)}">${renderIcon('refresh')}</button>` : ''}
               </div>
             </div>
           </header>
